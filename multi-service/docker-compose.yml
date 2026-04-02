@@ -1,0 +1,56 @@
+# Cross-platform setup — works on Linux, macOS, and Windows.
+#
+# dynamoip always proxies to localhost:PORT. Since each container has its own
+# network namespace, socat runs inside the dynamoip container to forward
+# localhost:PORT → the actual Docker service over the internal Docker network.
+# FORWARD_<service>=<port> env vars control which forwarders are created.
+#
+# On macOS/Windows: set LAN_IP in .env to your machine's LAN IP (run: node setup-env.js).
+# On Linux: LAN_IP is auto-detected — leave it unset.
+
+services:
+  inventory:
+    build:
+      context: ./inventory
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  dashboard:
+    build:
+      context: ./dashboard
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:6000"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  dynamoip:
+    build:
+      context: ./dynamoip
+    ports:
+      - "80:80"
+      - "443:443"
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      LAN_IP: "${LAN_IP:?LAN_IP is not set. Run: node setup-env.js}"
+      FORWARD_inventory: 3001
+      FORWARD_dashboard: 6000
+    volumes:
+      - dynamoip-certs:/root/.localmap/certs
+      - ./dynamoip.config.json:/config/dynamoip.config.json:ro
+    depends_on:
+      inventory:
+        condition: service_healthy
+      dashboard:
+        condition: service_healthy
+
+volumes:
+  dynamoip-certs:

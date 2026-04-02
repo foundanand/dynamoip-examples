@@ -1,0 +1,7 @@
+{
+  "baseDomain": "yourdomain.com",
+  "domains": {
+    "inventory": 3001,
+    "dashboard": 6000
+  }
+}
