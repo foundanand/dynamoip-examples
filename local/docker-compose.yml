@@ -1,18 +1,23 @@
-# Quick mode — mDNS .local hostnames with mkcert HTTPS. No Cloudflare needed.
+# Quick mode — mDNS .local hostnames with mkcert HTTPS.
+# No Cloudflare account needed.
 #
-# All containers use network_mode: host so the dynamoip container can:
-#   1. Broadcast mDNS on the real network interface
-#   2. Reach inventory (localhost:3001) and dashboard (localhost:6000) directly
+# Works on macOS, Linux, and Windows — but requires one-time host setup first:
+#   node setup-hosts.js   (adds .local hostnames to /etc/hosts, installs mkcert CA)
 #
-# Linux only. On macOS/Windows, Docker Desktop runs containers in a Linux VM —
-# host networking reaches the VM's network, not your machine's. Run dynamoip
-# on the host directly on those platforms instead.
+# How the cross-platform trick works:
+#   - setup-hosts.js runs `mkcert -install` on your host machine, adding the
+#     mkcert CA to your system keychain so your browser trusts it.
+#   - It writes CAROOT (the path to your mkcert CA files) into .env.
+#   - Docker mounts that directory read-only into the dynamoip container.
+#   - The container sets CAROOT so mkcert inside it finds the same CA.
+#   - dynamoip issues certs signed by that CA — your host already trusts them.
+#   - socat bridges localhost:PORT inside the container to the Docker service names,
+#     since dynamoip always proxies to localhost and containers have isolated networks.
 
 services:
   inventory:
     build:
       context: ./inventory
-    network_mode: host
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3001"]
@@ -24,7 +29,6 @@ services:
   dashboard:
     build:
       context: ./dashboard
-    network_mode: host
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:6000"]
@@ -38,16 +42,25 @@ services:
       context: ./dynamoip
       args:
         TARGETARCH: ${TARGETARCH:-amd64}
-    network_mode: host
+    ports:
+      - "80:80"
+      - "443:443"
     restart: on-failure
+    environment:
+      # Tells mkcert inside the container where to find the host CA.
+      # Must match the mounted volume path below.
+      CAROOT: /root/.local/share/mkcert
+      # Validates that setup-hosts.js was run — fails fast with a clear error if not.
+      _CAROOT_CHECK: "${CAROOT:?CAROOT is not set. Run: node setup-hosts.js}"
+      FORWARD_inventory: 3001
+      FORWARD_dashboard: 6000
     volumes:
-      - dynamoip-mkcert:/root/.local/share/mkcert
+      # Mount the host's mkcert CA directory read-only.
+      # CAROOT is written to .env by setup-hosts.js.
+      - ${CAROOT}:/root/.local/share/mkcert:ro
       - ./dynamoip.config.json:/config/dynamoip.config.json:ro
     depends_on:
       inventory:
         condition: service_healthy
       dashboard:
         condition: service_healthy
-
-volumes:
-  dynamoip-mkcert:

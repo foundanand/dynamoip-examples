@@ -16,7 +16,7 @@ dynamoip gives your local services real domain names and trusted HTTPS — reach
 | **SSL** | mkcert (CA install required once) | Let's Encrypt (trusted automatically) | Cloudflare TLS |
 | **Cloudflare** | Not needed | Required | Required |
 | **Credentials** | None | `CF_API_TOKEN` + `CF_EMAIL` | `CF_API_TOKEN` only |
-| **OS** | Linux only | macOS, Linux, Windows | macOS, Linux, Windows |
+| **OS** | macOS, Linux, Windows | macOS, Linux, Windows | macOS, Linux, Windows |
 | **Best for** | Zero-config local dev | LAN access, real domain | Public access, no port config |
 
 ---
@@ -79,6 +79,6 @@ docker compose up --build
 ## Requirements
 
 - [Docker Desktop](https://docs.docker.com/get-docker/) (macOS/Windows) or Docker Engine (Linux)
-- `local`: no external requirements
+- `local`: mkcert + Node.js >= 14 (for `setup-hosts.js`)
 - `lan` / `tunnel`: a domain managed by Cloudflare + API token
 - `lan`: Node.js >= 14 (for `setup-env.js`)
