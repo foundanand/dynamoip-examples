@@ -1,0 +1,54 @@
+# Max mode — Cloudflare Tunnel for public internet access.
+#
+# dynamoip proxies to localhost:PORT inside the container. Since each container
+# has its own network namespace, socat runs inside the dynamoip container to
+# forward localhost:PORT → the actual Docker service over the internal Docker network.
+# FORWARD_<service>=<port> env vars control which forwarders are created.
+#
+# No LAN_IP needed — Max mode uses Cloudflare Tunnel, not DNS A records.
+# No ports 80/443 — cloudflared makes an outbound connection, no inbound ports needed.
+
+services:
+  inventory:
+    build:
+      context: ./inventory
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  dashboard:
+    build:
+      context: ./dashboard
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:6000"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  dynamoip:
+    build:
+      context: ./dynamoip
+      args:
+        TARGETARCH: ${TARGETARCH:-amd64}
+    restart: on-failure
+    env_file: .env
+    environment:
+      FORWARD_inventory: 3001
+      FORWARD_dashboard: 6000
+    volumes:
+      - dynamoip-tunnels:/root/.localmap/tunnels
+      - ./dynamoip.config.json:/config/dynamoip.config.json:ro
+    depends_on:
+      inventory:
+        condition: service_healthy
+      dashboard:
+        condition: service_healthy
+
+volumes:
+  dynamoip-tunnels:

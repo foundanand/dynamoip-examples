@@ -1,18 +1,24 @@
 # dynamoip-examples
 
-> Docker examples for [dynamoip](https://github.com/foundanand/dynamoip) — run dynamoip and your services together in containers, with trusted HTTPS reachable from any device on the network.
+> Docker examples for [dynamoip](https://github.com/foundanand/dynamoip) — run dynamoip and your services together in containers, with trusted HTTPS reachable from your network or the internet.
 
-This repo contains ready-to-run Docker Compose examples. Each example is a self-contained directory with its own `docker-compose.yml`, `dynamoip.config.json`, `.env.example`, and a `setup-env.js` script.
+This repo contains three ready-to-run Docker Compose examples, one per dynamoip mode:
+
+| Folder | Mode | Access | Cloudflare needed |
+|---|---|---|---|
+| `local/` | Quick | LAN only, `.local` hostnames | No |
+| `lan/` | Pro | LAN only, real domain | Yes |
+| `tunnel/` | Max | Public internet | Yes |
 
 ---
 
 ## How Docker examples work
 
-dynamoip proxies HTTPS traffic to local services by `Host` header, always targeting `localhost:PORT`. In Docker, each container has its own network namespace, so `localhost` inside one container does not reach another container.
+dynamoip proxies HTTPS traffic to local services by `Host` header, always targeting `localhost:PORT`. In Docker, each container has its own network namespace — `localhost` inside one container does not reach another container.
 
-**The solution used in these examples: socat port forwarding inside the dynamoip container.**
+**The solution used in all three examples: socat port forwarding inside the dynamoip container.**
 
-A shell entrypoint (`entrypoint.sh`) reads `FORWARD_<service>=<port>` environment variables and starts a `socat` forwarder for each one:
+The entrypoint (`entrypoint.sh`) reads `FORWARD_<service>=<port>` environment variables and starts a socat forwarder for each one:
 
 ```sh
 socat TCP-LISTEN:<port>,fork,reuseaddr TCP:<service>:<port> &
@@ -20,70 +26,126 @@ socat TCP-LISTEN:<port>,fork,reuseaddr TCP:<service>:<port> &
 
 This bridges `localhost:PORT` inside the dynamoip container to the Docker service name over the internal Docker network. dynamoip never knows it isn't talking to a local process.
 
+`network_mode: host` is NOT used in any example — it only works on Linux and silently gives wrong results on macOS/Windows Docker Desktop. All examples use explicit `ports:` mappings or no ports (tunnel mode) instead.
+
 ---
 
-## LAN IP and Docker Desktop (macOS/Windows)
+## local/ — Quick mode
 
-On Linux, `os.networkInterfaces()` returns the real LAN IP. On macOS and Windows, Docker Desktop runs containers inside a Linux VM — `os.networkInterfaces()` returns the VM's internal IP (e.g. `172.17.x.x`), which is not reachable from other devices on the LAN.
+No Cloudflare account needed. Uses mDNS `.local` hostnames resolved via `/etc/hosts` and mkcert for HTTPS.
 
-**Solution:** set `LAN_IP` in `.env` to the host machine's real LAN IP. dynamoip checks `process.env.LAN_IP` first and skips auto-detection when it is set.
+**The Docker challenge for Quick mode:**
+Quick mode normally runs dynamoip directly on the host with `sudo`, giving it direct access to the network interface (for mDNS) and system keychain (for mkcert). Docker isolates both. This example bridges the gap:
 
-Each example includes `setup-env.js` which detects the LAN IP using the OS-native command and writes it to `.env`:
+- `setup-hosts.js` runs on the host once. It installs the mkcert CA into the system keychain (`mkcert -install`), writes `CAROOT` (path to the CA directory) to `.env`, and adds `/etc/hosts` entries pointing `inventory.local` and `dashboard.local` to `127.0.0.1`.
+- The host's mkcert CA directory is mounted read-only into the dynamoip container via a Docker volume using the `CAROOT` value from `.env`.
+- `CAROOT` env var is set inside the container to the mount path so mkcert finds the host CA.
+- `mkcert -install` runs in the entrypoint, registering the host CA in the container's trust store.
+- dynamoip issues certs signed by that CA. The host already trusts it — no browser warnings.
+- On macOS, `CAROOT` often contains spaces (`Application Support`). `setup-hosts.js` creates a `.mkcert-ca` symlink (no spaces) and writes that path to `.env` instead.
+
+**Env vars used:** `CAROOT` (written by `setup-hosts.js`), `FORWARD_<service>=<port>` (set in docker-compose.yml).
+
+**Volumes:** host mkcert CA dir (read-only), `dynamoip.config.json` (read-only).
+
+**Ports:** 80 and 443 mapped from host into dynamoip container.
+
+**dynamoip.config.json:** No `baseDomain` field — this is what triggers Quick mode in dynamoip.
+
+```json
+{
+  "domains": {
+    "inventory": 3001,
+    "dashboard": 6000
+  }
+}
+```
+
+**Setup flow:**
+```bash
+sudo node setup-hosts.js   # once — installs CA, writes .env, updates /etc/hosts
+docker compose up --build
+```
+
+---
+
+## lan/ — Pro mode
+
+Uses Cloudflare DNS A records pointing to your LAN IP. Let's Encrypt issues a wildcard certificate — trusted automatically on all devices, no manual CA install needed.
+
+**The Docker challenge for Pro mode (macOS/Windows):**
+On Linux, `os.networkInterfaces()` returns the real LAN IP. On macOS/Windows, Docker Desktop runs containers in a Linux VM — auto-detection returns the VM's internal IP, not the host machine's.
+
+**Solution:** `setup-env.js` runs on the host, detects the real LAN IP using OS-native commands, and writes `LAN_IP` to `.env`. Docker Compose passes this to the dynamoip container via environment variable.
+
+OS-native LAN IP detection:
 - macOS: `ipconfig getifaddr en0` (falls back to en1, en2)
 - Linux: `hostname -I`
 - Windows: PowerShell `Get-NetIPAddress` filtered to DHCP-assigned IPv4
 
-If detection fails, the script exits with a clear error — do not proceed to `docker compose up` until it succeeds.
+**Env vars used:** `LAN_IP` (written by `setup-env.js`), `CF_API_TOKEN`, `CF_EMAIL`, `FORWARD_<service>=<port>`.
 
-Docker Compose enforces this with:
-```yaml
-LAN_IP: "${LAN_IP:?LAN_IP is not set. Run: node setup-env.js}"
+**Volumes:** `dynamoip-certs` named volume (persists Let's Encrypt cert across restarts), `dynamoip.config.json` (read-only).
+
+**Ports:** 80 and 443 mapped from host into dynamoip container.
+
+**dynamoip.config.json:**
+```json
+{
+  "baseDomain": "yourdomain.com",
+  "domains": {
+    "inventory": 3001,
+    "dashboard": 6000
+  }
+}
+```
+
+**Setup flow:**
+```bash
+node setup-env.js          # detects LAN IP, creates .env
+# fill in CF_API_TOKEN and CF_EMAIL in .env
+docker compose up --build
 ```
 
 ---
 
-## Port binding on macOS/Windows
+## tunnel/ — Max mode
 
-`network_mode: host` does NOT work on Docker Desktop for macOS or Windows. It shares the Linux VM's network namespace, not the host machine's. Ports 80 and 443 are exposed via explicit `ports:` mappings instead:
+Uses a Cloudflare Tunnel — no inbound ports needed, no LAN IP to configure, reachable from the public internet.
 
-```yaml
-ports:
-  - "80:80"
-  - "443:443"
+**How tunnels work:** cloudflared (the tunnel daemon, installed in the dynamoip container) makes an outbound HTTPS connection to Cloudflare. Cloudflare routes incoming traffic through that connection. No ports 80/443 on the host.
+
+**Env vars used:** `CF_API_TOKEN`, `FORWARD_<service>=<port>`. No `LAN_IP` needed.
+
+**Volumes:** `dynamoip-tunnels` named volume (persists tunnel credentials across restarts), `dynamoip.config.json` (read-only).
+
+**Ports:** None exposed on host — cloudflared handles inbound routing.
+
+**dynamoip.config.json:** Requires `"tunnel": true`.
+```json
+{
+  "baseDomain": "yourdomain.com",
+  "domains": {
+    "inventory": 3001,
+    "dashboard": 6000
+  },
+  "tunnel": true
+}
 ```
 
-Docker Desktop proxies these from the Mac/Windows host into the VM, so dynamoip's proxy is reachable from the LAN.
-
-On Linux, `network_mode: host` is an alternative that works correctly.
-
----
-
-## Typical example structure
-
-```
-<example-name>/
-├── setup-env.js              Run first — detects LAN IP, creates .env
-├── docker-compose.yml        All services + dynamoip
-├── dynamoip.config.json      baseDomain + domain→port mapping
-├── .env.example              CF_API_TOKEN, CF_EMAIL, LAN_IP template
-├── .gitignore                Excludes .env
-├── README.md                 Setup instructions
-├── <service-a>/
-│   ├── Dockerfile            Single-stage (no deps) or multi-stage (has deps)
-│   ├── server.js
-│   └── index.html
-├── <service-b>/
-│   └── ...
-└── dynamoip/
-    ├── Dockerfile            Multi-stage: deps stage installs dynamoip@latest, runner stage copies node_modules
-    └── entrypoint.sh         Starts socat forwarders then exec's dynamoip
+**Setup flow:**
+```bash
+cp .env.example .env
+# fill in CF_API_TOKEN in .env
+# edit dynamoip.config.json — set baseDomain
+docker compose up --build
 ```
 
 ---
 
 ## Dockerfile conventions
 
-**Services with no npm dependencies** (plain Node.js, no `node_modules`): use a single-stage Dockerfile.
+**App service containers** (inventory, dashboard) — no npm dependencies, single-stage:
 
 ```dockerfile
 FROM node:22-alpine
@@ -96,132 +158,55 @@ EXPOSE <port>
 CMD ["node", "server.js"]
 ```
 
-**Services with npm dependencies**: use multi-stage. Stage 1 installs deps, stage 2 copies only `node_modules` and source into a clean image. This keeps build tools and npm cache out of the final image.
+**dynamoip container** — always multi-stage. Stage 1 installs dynamoip via npm. Stage 2 copies `node_modules` into a clean image and adds runtime tools:
+- `local/`: adds `socat` + `mkcert` binary (downloaded from GitHub releases)
+- `lan/`: adds `socat` only
+- `tunnel/`: adds `socat` + `cloudflared` binary (downloaded from GitHub releases)
 
-**dynamoip container**: always multi-stage. Stage 1 runs `npm install dynamoip@latest`. Stage 2 copies `node_modules` into a clean alpine image, adds `socat`, and uses `entrypoint.sh` as the entrypoint.
+All dynamoip containers run as root — required to bind ports 80/443 and run `mkcert -install`.
 
-```dockerfile
-FROM node:22-alpine AS deps
-WORKDIR /app
-RUN npm install dynamoip@latest
-
-FROM node:22-alpine AS runner
-RUN apk add --no-cache socat
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
-COPY entrypoint.sh ./
-RUN chmod +x entrypoint.sh
-ENTRYPOINT ["./entrypoint.sh"]
-```
-
-Runs as root — required to bind to ports 80 and 443.
+Architecture detection (`TARGETARCH` build arg) is used when downloading mkcert and cloudflared binaries so the images build correctly on both `amd64` and `arm64`.
 
 ---
 
 ## docker-compose.yml conventions
 
-- All app services expose only internal ports (no `ports:` needed — dynamoip proxies to them via socat)
-- All app services have a `healthcheck` so dynamoip waits for them before starting
-- The dynamoip service has `ports: ["80:80", "443:443"]`
-- The dynamoip service uses `env_file: .env` and passes `FORWARD_<service>=<port>` env vars
-- A named volume (`dynamoip-certs`) persists the Let's Encrypt certificate across restarts
-- `restart: unless-stopped` on all services
-
-```yaml
-services:
-  myapp:
-    build: ./myapp
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:<port>"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
-
-  dynamoip:
-    build: ./dynamoip
-    ports:
-      - "80:80"
-      - "443:443"
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      LAN_IP: "${LAN_IP:?LAN_IP is not set. Run: node setup-env.js}"
-      FORWARD_myapp: <port>
-    volumes:
-      - dynamoip-certs:/root/.localmap/certs
-      - ./dynamoip.config.json:/config/dynamoip.config.json:ro
-    depends_on:
-      myapp:
-        condition: service_healthy
-
-volumes:
-  dynamoip-certs:
-```
+- App service containers: no `ports:` — they are internal, dynamoip reaches them via socat
+- App service containers: always have a `healthcheck` — dynamoip waits for them via `depends_on: condition: service_healthy`
+- dynamoip container: `ports: ["80:80", "443:443"]` in `local/` and `lan/`; no ports in `tunnel/`
+- dynamoip container: `env_file: .env` for credentials; explicit `environment:` for `FORWARD_*` and mode-specific vars
+- Named volumes persist state across restarts: certs (`lan/`), tunnel credentials (`tunnel/`), mkcert CA is host-mounted (`local/`)
+- No `version:` key at the top — obsolete in modern Docker Compose
 
 ---
 
 ## dynamoip.config.json conventions
 
-Use `yourdomain.com` as the placeholder `baseDomain` in committed files. Users replace this with their own domain.
-
-```json
-{
-  "baseDomain": "yourdomain.com",
-  "domains": {
-    "myapp": 3000
-  }
-}
-```
-
-The domain names in `domains` must match the `FORWARD_<name>` env vars and the Docker service names in `docker-compose.yml`.
+- `baseDomain` present → Pro or Max mode (Cloudflare required)
+- `baseDomain` absent → Quick mode (no Cloudflare, uses `.local` hostnames)
+- `"tunnel": true` → Max mode (creates a Cloudflare Tunnel)
+- Domain names in `domains` must match `FORWARD_<name>` env vars and Docker service names in `docker-compose.yml`
+- Use `yourdomain.com` as the committed placeholder — users replace with their actual domain
 
 ---
 
-## .env.example conventions
+## .env conventions
 
-```env
-# Cloudflare credentials (required for Pro mode)
-CF_API_TOKEN=your_cloudflare_api_token_here
-CF_EMAIL=you@example.com
-
-# Required on macOS and Windows — set to your machine's LAN IP (e.g. 192.168.1.42)
-# On Linux, leave unset — dynamoip auto-detects it.
-# LAN_IP=
-```
-
-Never commit `.env`. Always commit `.env.example`. Always include `.env` in `.gitignore`.
-
----
-
-## Running an example
-
-```bash
-cd <example-name>
-node setup-env.js        # detects LAN IP → writes .env
-# edit .env: fill in CF_API_TOKEN and CF_EMAIL
-docker compose up --build
-```
-
-To stop:
-```bash
-docker compose down
-```
-
-To also remove the cert volume (forces re-issue on next start):
-```bash
-docker compose down -v
-```
+- Never commit `.env` — it contains credentials
+- Always commit `.env.example` as a template
+- `.env` is always in `.gitignore`
+- `local/.env` contains only `CAROOT` (written by `setup-hosts.js`)
+- `lan/.env` contains `CF_API_TOKEN`, `CF_EMAIL`, `LAN_IP` (LAN_IP written by `setup-env.js`)
+- `tunnel/.env` contains only `CF_API_TOKEN`
 
 ---
 
 ## What not to do
 
-- Do not use `network_mode: host` in examples — it only works on Linux and silently fails on macOS/Windows
+- Do not use `network_mode: host` — it only works on Linux and silently gives wrong results on macOS/Windows Docker Desktop
 - Do not hardcode a real domain in `dynamoip.config.json` — use `yourdomain.com`
-- Do not commit `.env` — it contains real Cloudflare credentials
-- Do not add `ports:` to app service containers — they are internal; dynamoip reaches them via socat
-- Do not run `docker compose up` before `node setup-env.js` — `LAN_IP` will be missing and Compose will refuse to start
-- Do not use multi-stage builds for services with no npm dependencies — it breaks because `node_modules` is never created
-- Do not use `version:` at the top of `docker-compose.yml` — it is obsolete in modern Docker Compose
+- Do not commit `.env` — it contains real credentials or CA paths
+- Do not add `ports:` to app service containers — they are internal
+- Do not run `docker compose up` before the host setup script (`setup-hosts.js` or `setup-env.js`) — required env vars will be missing
+- Do not use `version:` at the top of `docker-compose.yml` — it is obsolete
+- Do not use a single-stage build for the dynamoip container — npm cache and build tools must not be in the final image

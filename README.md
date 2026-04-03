@@ -6,34 +6,71 @@ dynamoip gives your local services real domain names and trusted HTTPS — reach
 
 ---
 
+## Which example should I use?
+
+| | [local](./local/) | [lan](./lan/) | [tunnel](./tunnel/) |
+|---|---|---|---|
+| **Mode** | Quick | Pro | Max |
+| **Access** | LAN only | LAN only | Public internet |
+| **Domain** | `*.local` (mDNS) | `*.yourdomain.com` | `*.yourdomain.com` |
+| **SSL** | mkcert (CA install required once) | Let's Encrypt (trusted automatically) | Cloudflare TLS |
+| **Cloudflare** | Not needed | Required | Required |
+| **Credentials** | None | `CF_API_TOKEN` + `CF_EMAIL` | `CF_API_TOKEN` only |
+| **OS** | Linux only | macOS, Linux, Windows | macOS, Linux, Windows |
+| **Best for** | Zero-config local dev | LAN access, real domain | Public access, no port config |
+
+---
+
 ## Examples
 
-### [multi-service](./multi-service/)
+### [local](./local/) — Quick mode
 
-Two apps (inventory + dashboard) and dynamoip all running in Docker. Works on macOS, Linux, and Windows.
+No Cloudflare. No credentials. Uses mDNS `.local` hostnames and mkcert for HTTPS.
+
+```
+https://inventory.local  →  Docker container (port 3001)
+https://dashboard.local  →  Docker container (port 6000)
+```
+
+```bash
+cd local
+docker compose up --build
+# then install the CA cert on each device once (see local/README.md)
+```
+
+---
+
+### [lan](./lan/) — Pro mode
+
+Cloudflare DNS A records point to your LAN IP. Let's Encrypt wildcard cert — trusted on all devices automatically.
 
 ```
 https://inventory.yourdomain.com  →  Docker container (port 3001)
 https://dashboard.yourdomain.com  →  Docker container (port 6000)
 ```
 
-**What's in it:**
-```
-multi-service/
-├── setup-env.js          Detects your LAN IP and writes .env (run this first)
-├── docker-compose.yml    Runs all three services
-├── dynamoip.config.json  Domain → port mapping
-├── .env.example          Credentials template
-├── inventory/            Minimal inventory app
-├── dashboard/            Minimal dashboard app
-└── dynamoip/             dynamoip container with socat port forwarding
-```
-
-**Quick start:**
 ```bash
-cd multi-service
+cd lan
 node setup-env.js        # detects LAN IP, creates .env
 # fill in CF_API_TOKEN and CF_EMAIL in .env
+docker compose up --build
+```
+
+---
+
+### [tunnel](./tunnel/) — Max mode
+
+Cloudflare Tunnel — no ports to open, no LAN IP to configure, reachable from anywhere on the internet.
+
+```
+https://inventory.yourdomain.com  →  Docker container (port 3001)
+https://dashboard.yourdomain.com  →  Docker container (port 6000)
+```
+
+```bash
+cd tunnel
+cp .env.example .env
+# fill in CF_API_TOKEN in .env
 docker compose up --build
 ```
 
@@ -42,18 +79,6 @@ docker compose up --build
 ## Requirements
 
 - [Docker Desktop](https://docs.docker.com/get-docker/) (macOS/Windows) or Docker Engine (Linux)
-- Node.js >= 14 (for `setup-env.js`)
-- A domain managed by Cloudflare + API token with `Zone:DNS:Edit` permission
-
-## How it works
-
-```
-Your machine (192.168.x.x)
-  ├── inventory container   → port 3001
-  ├── dashboard container   → port 6000
-  └── dynamoip container    → ports 80 + 443
-        socat bridges localhost:PORT → Docker service name
-        dynamoip sets Cloudflare DNS A records to your LAN IP
-        Let's Encrypt issues a wildcard certificate
-        Any device on the same network opens the URL, no warnings
-```
+- `local`: no external requirements
+- `lan` / `tunnel`: a domain managed by Cloudflare + API token
+- `lan`: Node.js >= 14 (for `setup-env.js`)

@@ -1,0 +1,53 @@
+# Quick mode — mDNS .local hostnames with mkcert HTTPS. No Cloudflare needed.
+#
+# All containers use network_mode: host so the dynamoip container can:
+#   1. Broadcast mDNS on the real network interface
+#   2. Reach inventory (localhost:3001) and dashboard (localhost:6000) directly
+#
+# Linux only. On macOS/Windows, Docker Desktop runs containers in a Linux VM —
+# host networking reaches the VM's network, not your machine's. Run dynamoip
+# on the host directly on those platforms instead.
+
+services:
+  inventory:
+    build:
+      context: ./inventory
+    network_mode: host
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  dashboard:
+    build:
+      context: ./dashboard
+    network_mode: host
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:6000"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  dynamoip:
+    build:
+      context: ./dynamoip
+      args:
+        TARGETARCH: ${TARGETARCH:-amd64}
+    network_mode: host
+    restart: on-failure
+    volumes:
+      - dynamoip-mkcert:/root/.local/share/mkcert
+      - ./dynamoip.config.json:/config/dynamoip.config.json:ro
+    depends_on:
+      inventory:
+        condition: service_healthy
+      dashboard:
+        condition: service_healthy
+
+volumes:
+  dynamoip-mkcert:
